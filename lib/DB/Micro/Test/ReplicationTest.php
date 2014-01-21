@@ -2,9 +2,14 @@
 class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
 {
     /**
-     * @var DB_Micro_Test_ReplicationTest_KeyValueStorage
+     * @var DB_Micro_Test_ReplicationTest_StoragePos
      */
-    private $_kvStorage;
+    private $_storagePos;
+
+    /**
+     * @var DB_Micro_Test_ReplicationTest_StorageHealth
+     */
+    private $_storageHealth;
 
     /**
      * @var array
@@ -18,7 +23,8 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
 
     public function setUp()
     {
-        $this->_kvStorage = new DB_Micro_Test_ReplicationTest_KeyValueStorage();
+        $this->_storagePos = new DB_Micro_Test_ReplicationTest_StoragePos();
+        $this->_storageHealth = new DB_Micro_Test_ReplicationTest_StorageHealth();
         $log =& $this->_log;
         $this->_logger = function($sql, $time=null) use (&$log) {
             // Remain only first line of error messages, because next lines typically
@@ -31,7 +37,7 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
     public function testDsnAndLinkDependsOnCurrentPreferredAndActiveSlaveOrMaster()
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://slave1,slave2/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://slave1,slave2/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $this->assertRegExp('{/slave1/}', $replication->getDsn());
         $this->assertRegExp('{^link\(.*/slave1/.*\)$}', $replication->getLink());
         $replication->switchToMaster();
@@ -42,7 +48,7 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
     public function testConnectSlaveWhenItIsFirstAndAlive()
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://slave,b/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://slave,b/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->query('select 1');
         $this->assertEquals(
             array(
@@ -51,7 +57,8 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
             ),
             $this->_log
         );
-        $this->assertEquals(array('get db', 'get abcd'), $this->_kvStorage->ops);
+        $this->assertEquals(array('get default'), $this->_storagePos->ops);
+        $this->assertEquals(array('get'), $this->_storageHealth->ops);
     }
 
     /**
@@ -61,7 +68,7 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
         // First connection - tries to connect sequentially.
-        $replication = new DB_Micro_Test_ReplicationTest_Replication($dsn = 'p://dead,slave,b/test?fail_check_interval=1', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication($dsn = 'p://dead,slave,b/test?fail_check_interval=1', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->query('select 1');
         $this->assertEquals(
             array(
@@ -72,11 +79,13 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
             ),
             $this->_log
         );
-        $this->assertEquals(array('get db', 'get db', 'set db', 'get abcd'), $this->_kvStorage->ops);
+        $this->assertEquals(array('get default'), $this->_storagePos->ops);
+        $this->assertEquals(array('get', 'get', 'set'), $this->_storageHealth->ops);
         // Second connection - it knows that "dead" host is dead already, so doesn't try it.
         $this->_log = array();
-        $this->_kvStorage->ops = array();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication($dsn, $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $this->_storagePos->ops = array();
+        $this->_storageHealth->ops = array();
+        $replication = new DB_Micro_Replication($dsn, $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->query('select 1');
         $this->assertEquals(
             array(
@@ -86,12 +95,14 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
             ),
             $this->_log
         );
-        $this->assertEquals(array('get db', 'get abcd'), $this->_kvStorage->ops);
+        $this->assertEquals(array('get default'), $this->_storagePos->ops);
+        $this->assertEquals(array('get'), $this->_storageHealth->ops);
         // Third connection after a delay - dead slave is checked again.
         sleep(2);
         $this->_log = array();
-        $this->_kvStorage->ops = array();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication($dsn, $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $this->_storagePos->ops = array();
+        $this->_storageHealth->ops = array();
+        $replication = new DB_Micro_Replication($dsn, $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->query('select 1');
         $this->assertEquals(
             array(
@@ -102,13 +113,14 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
             ),
             $this->_log
         );
-        $this->assertEquals(array('get db', 'get db', 'set db', 'get abcd'), $this->_kvStorage->ops);
+        $this->assertEquals(array('get default'), $this->_storagePos->ops);
+        $this->assertEquals(array('get', 'get', 'set'), $this->_storageHealth->ops);
     }
 
     public function testConnectSlaveWhenFirstIsMasterAndSecondIsSlave()
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://master,slave/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://master,slave/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->query('select 1');
         $this->assertEquals(
             array(
@@ -118,13 +130,14 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
             ),
             $this->_log
         );
-        $this->assertEquals(array('get db', 'get abcd'), $this->_kvStorage->ops);
+        $this->assertEquals(array('get default'), $this->_storagePos->ops);
+        $this->assertEquals(array('get'), $this->_storageHealth->ops);
     }
 
     public function testConnectWhenThreeMastersInDsnStopTryingOnSecond()
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://master1,master2,master3/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://master1,master2,master3/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->query('select 1');
         $this->assertEquals(
             array(
@@ -135,13 +148,14 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
             ),
             $this->_log
         );
-        $this->assertEquals(array('get db', 'get abcd'), $this->_kvStorage->ops);
+        $this->assertEquals(array('get default'), $this->_storagePos->ops);
+        $this->assertEquals(array('get'), $this->_storageHealth->ops);
     }
 
     public function testConnectWhenFirstIsMasterAndMasterAsReplicaParamIsSetLetMasterBeUsedAsReplica()
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://master,slave/test?master_as_replica=1', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://master,slave/test?master_as_replica=1', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->query('select 1');
         $this->assertEquals(
             array(
@@ -151,7 +165,8 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
             ),
             $this->_log
         );
-        $this->assertEquals(array('get db', 'get abcd'), $this->_kvStorage->ops);
+        $this->assertEquals(array('get default'), $this->_storagePos->ops);
+        $this->assertEquals(array('get'), $this->_storageHealth->ops);
     }
 
     /**
@@ -160,7 +175,7 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
     public function testConnectMasterAsReadOnlyWhenAllReplicasAreDeadAndOnlyMasterLives()
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://dead1,dead2,master/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://dead1,dead2,master/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->query('select 1');
         $this->assertEquals(
             array(
@@ -173,13 +188,14 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
             ),
             $this->_log
         );
-        $this->assertEquals(array('get db', 'get db', 'set db', 'get db', 'set db', 'get abcd'), $this->_kvStorage->ops);
+        $this->assertEquals(array('get default'), $this->_storagePos->ops);
+        $this->assertEquals(array('get', 'get', 'set', 'get', 'set'), $this->_storageHealth->ops);
     }
 
     public function testTwoQueriesToSlave()
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://slave/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://slave/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->query('select 1');
         $replication->query('select 2');
         $this->assertEquals(
@@ -190,14 +206,15 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
             ),
             $this->_log
         );
-        $this->assertEquals(array(), $this->_kvStorage->storage);
-        $this->assertEquals(array('get db', 'get abcd'), $this->_kvStorage->ops);
+        $this->assertEquals(array(), $this->_storagePos->storage);
+        $this->assertEquals(array('get default'), $this->_storagePos->ops);
+        $this->assertEquals(array('get'), $this->_storageHealth->ops);
     }
 
     public function testUpdateThenQueryToMaster()
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://slave,master/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://slave,master/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->query('select 1');
         $replication->update('update t1');
         $replication->update('update t2');
@@ -215,14 +232,15 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
             ),
             $this->_log
         );
-        $this->assertEquals(array('abcd' => 2), $this->_kvStorage->storage);
-        $this->assertEquals(array('get db', 'get abcd', 'set abcd', 'set abcd'), $this->_kvStorage->ops);
+        $this->assertEquals(array('default' => 'i:2;'), $this->_storagePos->storage);
+        $this->assertEquals(array('get default', 'set default', 'set default'), $this->_storagePos->ops);
+        $this->assertEquals(array('get'), $this->_storageHealth->ops);
     }
 
     public function testUpdateSavePosOnCommitThenQueryToMaster()
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://slave,master/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://slave,master/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->query('select 0');
         $replication->beginTransaction();
         $replication->query('select 1');
@@ -247,15 +265,16 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
             ),
             $this->_log
         );
-        $this->assertEquals(array('abcd' => 2), $this->_kvStorage->storage);
-        $this->assertEquals(array('get db', 'get abcd', 'set abcd'), $this->_kvStorage->ops);
+        $this->assertEquals(array('default' => 'i:2;'), $this->_storagePos->storage);
+        $this->assertEquals(array('get default', 'set default'), $this->_storagePos->ops);
+        $this->assertEquals(array('get'), $this->_storageHealth->ops);
     }
 
     public function testUpdateSavePosNextConnectIsWithLagSoUseMaster()
     {
         // First connect - save the data and non-zero master pos.
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://slave,master/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://slave,master/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->update('update t1');
         $this->assertEquals(
             array(
@@ -266,13 +285,15 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
             ),
             $this->_log
         );
-        $this->assertEquals(array('abcd' => 1), $this->_kvStorage->storage);
-        $this->assertEquals(array('get db', 'get abcd', 'set abcd'), $this->_kvStorage->ops);
-        // Second connect - slave is in lag for 'abcd' sid, so use master.
+        $this->assertEquals(array('default' => 'i:1;'), $this->_storagePos->storage);
+        $this->assertEquals(array('get default', 'set default'), $this->_storagePos->ops);
+        $this->assertEquals(array('get'), $this->_storageHealth->ops);
+        // Second connect - slave is in lag for 'default' sid, so use master.
         $this->_log = array();
-        $this->_kvStorage->ops = array();
+        $this->_storagePos->ops = array();
+        $this->_storageHealth->ops = array();
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://slave_with_pos_0,master/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://slave_with_pos_0,master/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->query('select 1');
         $this->assertEquals(
             array(
@@ -282,13 +303,14 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
             ),
             $this->_log
         );
-        $this->assertEquals(array('get db', 'get abcd'), $this->_kvStorage->ops);
+        $this->assertEquals(array('get default'), $this->_storagePos->ops);
+        $this->assertEquals(array('get'), $this->_storageHealth->ops);
     }
 
     public function testWhenReplicaActiveAfterBeginGoToMasterAfterRollbackReturnToReplica()
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://slave,master/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://slave,master/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->beginTransaction();
         $replication->update('update t1');
         $replication->rollBack();
@@ -304,14 +326,15 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
             ),
             $this->_log
         );
-        $this->assertEquals(array(), $this->_kvStorage->storage);
-        $this->assertEquals(array('get db', 'get abcd'), $this->_kvStorage->ops);
+        $this->assertEquals(array(), $this->_storagePos->storage);
+        $this->assertEquals(array('get default'), $this->_storagePos->ops);
+        $this->assertEquals(array('get'), $this->_storageHealth->ops);
     }
 
     public function testWhenMasterActiveAfterBeginGoToMasterAfterRollbackStaysOnMaster()
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://slave,master/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://slave,master/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->update('update t1');
         $replication->beginTransaction();
         $replication->update('update t2');
@@ -330,14 +353,15 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
             ),
             $this->_log
         );
-        $this->assertEquals(array('abcd' => 1), $this->_kvStorage->storage);
-        $this->assertEquals(array('get db', 'get abcd', 'set abcd'), $this->_kvStorage->ops);
+        $this->assertEquals(array('default' => 'i:1;'), $this->_storagePos->storage);
+        $this->assertEquals(array('get default', 'set default'), $this->_storagePos->ops);
+        $this->assertEquals(array('get'), $this->_storageHealth->ops);
     }
 
     public function testSwitchToMaster()
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://slave,master/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://slave,master/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->query('select 1');
         $replication->switchToMaster();
         $replication->query('select 2');
@@ -353,12 +377,12 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
     }
 
     /**
-     * @group testSwitchToMasterAfterFirstQueryClosesSlaveConnAndRemainsOnlyMasterConnToEconomizeConnections
+     * @group testSwitchToMasterWithQueriesBeforeNoConnectionsEconomy
      */
-    public function testSwitchToMasterAfterFirstQueryClosesSlaveConnAndRemainsOnlyMasterConnToEconomizeConnections()
+    public function testSwitchToMasterWithQueriesBeforeNoConnectionsEconomy()
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://slave,master/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://slave,master/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->query('select 0');
         $replication->switchToMaster();
         $replication->query('select 1');
@@ -369,7 +393,6 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
                 'slave(ro): select 0',
                 'master: connect',
                 'master: select 1',
-                'slave: connect',
                 'slave(ro): select 2',
             ),
             $this->_log
@@ -377,13 +400,14 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
     }
 
     /**
-     * @group testSwitchToMasterWithNoQueriesBeforeClosesSlaveConnAndRemainsOnlyMasterConnToEconomizeConnections
+     * @group testSwitchToMasterWithNoQueriesBeforeNoConnectionsEconomy
      */
-    public function testSwitchToMasterWithNoQueriesBeforeClosesSlaveConnAndRemainsOnlyMasterConnToEconomizeConnections()
+    public function testSwitchToMasterWithNoQueriesBeforeNoConnectionsEconomy()
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://slave,master/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://slave,master/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->switchToMaster();
+        $this->assertEquals(array(), $this->_log, "switchToMaster() on a non-yet-used connection should not perform DB operations");
         $replication->query('select 1');
         $replication->mSidNamespace(null)->query('select 2');
         $this->assertEquals(
@@ -391,7 +415,6 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
                 'slave: connect',
                 'master: connect',
                 'master: select 1',
-                'slave: connect',
                 'slave(ro): select 2',
             ),
             $this->_log
@@ -401,7 +424,7 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
     public function testSwitchToMasterInsideRolledBackTransaction()
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://slave,master/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://slave,master/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->query('select 1');
         $replication->beginTransaction();
         $replication->update('update t1');
@@ -425,7 +448,7 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
     public function testMSidNamespaceUpdate()
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://slave,master/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://slave,master/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->query('select 1');
         $replication->mSidNamespace(null)->update('update t1');
         $replication->query('select 2');
@@ -444,7 +467,7 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
     public function testMSidNamespaceSelect()
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
-        $replication = new DB_Micro_Test_ReplicationTest_Replication('p://slave,master/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+        $replication = new DB_Micro_Replication('p://slave,master/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
         $replication->update('update t1');
         $replication->mSidNamespace(null)->query('select 1');
         $replication->query('select 2');
@@ -468,7 +491,7 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
     {
         $impl = new DB_Micro_Test_ReplicationTest_Impl();
         try {
-            $replication = new DB_Micro_Test_ReplicationTest_Replication('p://dead1,dead2/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+            $replication = new DB_Micro_Replication('p://dead1,dead2/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
             $replication->query('select 1');
             $this->fail("Should be a DB_Micro_Exception.");
         } catch (DB_Micro_Exception $e) {
@@ -481,12 +504,13 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
                 ),
                 $this->_log
             );
-            $this->assertEquals(array('get db', 'get db', 'set db', 'get db', 'set db'), $this->_kvStorage->ops);
+            $this->assertEquals(array('get', 'get', 'set', 'get', 'set'), $this->_storageHealth->ops);
         }
         $this->_log = array();
-        $this->_kvStorage->ops = array();
+        $this->_storagePos->ops = array();
+        $this->_storageHealth->ops = array();
         try {
-            $replication = new DB_Micro_Test_ReplicationTest_Replication('p://dead1,dead2/test', $this->_logger, 'abcd', $impl, $this->_kvStorage);
+            $replication = new DB_Micro_Replication('p://dead1,dead2/test', $this->_logger, $impl, $this->_storagePos, $this->_storageHealth);
             $replication->query('select 1');
             $this->fail("Should be a DB_Micro_Exception.");
         } catch (DB_Micro_Exception $e) {
@@ -500,36 +524,45 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
                 ),
                 $this->_log
             );
-            $this->assertEquals(array('get db', 'set db', 'get db', 'set db', 'get db', 'set db'), $this->_kvStorage->ops);
+            $this->assertEquals(array('get', 'set', 'get', 'set', 'get', 'set'), $this->_storageHealth->ops);
         }
     }
 }
 
 
-class DB_Micro_Test_ReplicationTest_Replication extends DB_Micro_Replication
-{
-    protected function _getClusterNameHash()
-    {
-        return 'db';
-    }
-}
-
-
-class DB_Micro_Test_ReplicationTest_KeyValueStorage extends DB_Micro_Replication_KeyValueStorage_Abstract
+class DB_Micro_Test_ReplicationTest_StoragePos extends DB_Micro_Replication_StoragePos_Abstract
 {
     public $storage = array();
     public $ops = array();
+
+    public function set($k, $v)
+    {
+        $this->ops[] = "set $k";
+        $this->storage[$k] = $v;
+    }
 
     public function get($k)
     {
         $this->ops[] = "get $k";
         return @$this->storage[$k];
     }
+}
+
+class DB_Micro_Test_ReplicationTest_StorageHealth extends DB_Micro_Replication_StorageHealth_Abstract
+{
+    public $storage = array();
+    public $ops = array();
 
     public function set($k, $v)
     {
-        $this->ops[] = "set $k";
+        $this->ops[] = "set";
         $this->storage[$k] = $v;
+    }
+
+    public function get($k)
+    {
+        $this->ops[] = "get";
+        return @$this->storage[$k];
     }
 }
 

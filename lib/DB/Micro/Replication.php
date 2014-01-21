@@ -7,7 +7,7 @@ class DB_Micro_Replication implements DB_Micro_IConnection
     /**
      * @var string
      */
-    private $_sid;
+    private $_sidNs;
 
     /**
      * @var callback
@@ -20,9 +20,9 @@ class DB_Micro_Replication implements DB_Micro_IConnection
     private $_impl;
 
     /**
-     * @var DB_Micro_Replication_KeyValueStorage_Abstract
+     * @var DB_Micro_Replication_StoragePos_Abstract
      */
-    private $_kvStorage;
+    private $_storagePos;
 
     /**
      * @var DB_Micro_IConnection
@@ -94,17 +94,23 @@ class DB_Micro_Replication implements DB_Micro_IConnection
      *
      * @param string $dsn
      * @param callback $logger
-     * @param string $sid      If null, no master pos is saved and traced between connections.
      * @param DB_Micro_Replication_Impl_Abstract $impl
-     * @param DB_Micro_Replication_KeyValueStorage_Abstract $kvStorage
+     * @param DB_Micro_Replication_StoragePos_Abstract $storagePos
+     * @param DB_Micro_Replication_StorageHealth_Abstract $storageHealth
      * @throws DB_Micro_Exception
      */
-    public function __construct($dsn, $logger, $sid, $impl, $kvStorage)
+    public function __construct(
+        $dsn, $logger,
+        DB_Micro_Replication_Impl_Abstract $impl,
+        DB_Micro_Replication_StoragePos_Abstract $storagePos = null,
+        DB_Micro_Replication_StorageHealth_Abstract $storageHealth = null
+    )
     {
-        $this->_sid = $sid;
+        $this->_sidNs = "default";
         $this->_logger = $logger;
         $this->_impl = $impl;
-        $this->_kvStorage = $kvStorage;
+        $this->_storagePos = $storagePos? $storagePos : new DB_Micro_Replication_StoragePos_Session();
+        $this->_storageHealth = $storageHealth? $storageHealth : new DB_Micro_Replication_StorageHealth_TmpFile();
         $this->_dsn = $dsn;
         if (preg_match('{^ (\w+:// (?:[^@]+@)?) ([^/]+) ( /[^?]* (?:\?(.*))? ) $}xs', $this->_dsn, $m)) {
             $this->_dsnWithoutHost = $m[1] . "*" . $m[3];
@@ -137,9 +143,11 @@ class DB_Micro_Replication implements DB_Micro_IConnection
     public function switchToMaster()
     {
         $this->_hadUpdates = true;
-        $this->_hadUpatesBeforeTransaction = true; // master becomes acrive even after ROLLBACK
-        $this->_masterConnCache = $this->_getMasterConn(); // we'll never search for a master in the future
-        $this->_slaveConnCache = null; // close the slave connection, and _hadUpdates==true, so never use slave
+        $this->_hadUpatesBeforeTransaction = true; // master becomes active even after ROLLBACK
+        // We DO NOT close the slave connection here, because later somebody
+        // may need to call mSidNamespace(null) and force a slave to be used
+        // with the new connect command (which is expensive).
+        // So we do not economize slave connections.
         return $this;
     }
 
@@ -157,11 +165,11 @@ class DB_Micro_Replication implements DB_Micro_IConnection
     {
         $obj = clone $this;
         if ($nsName === null) {
-            $obj->_sid = null;
+            $obj->_sidNs = null;
             $obj->_hadUpdates = false;
             $obj->_hadUpatesBeforeTransaction = false;
         } else {
-            $obj->_sid = $this->_sid . "." . $nsName;
+            $obj->_sidNs .= $nsName;
         }
         return $obj;
     }
@@ -261,12 +269,12 @@ class DB_Micro_Replication implements DB_Micro_IConnection
      */
     private function _saveCurMasterPosIfHadUpdates()
     {
-        if ($this->_sid == null) {
+        if ($this->_sidNs == null) {
             return;
         }
         if ($this->_hadUpdates) {
             $pos = $this->_impl->getMasterPos($this->_getMasterConn());
-            $this->_kvStorage->set($this->_sid, $pos);
+            $this->_setPos($this->_sidNs, $pos);
         }
     }
 
@@ -364,9 +372,9 @@ class DB_Micro_Replication implements DB_Micro_IConnection
     private function _getClosestNonFailedHosts()
     {
         $hosts = $allHosts = $this->_impl->sortHostsByDistance($this->_dsnHosts);
-        $failed = $this->_kvStorage->get($this->_getClusterNameHash());
+        $failed = $this->_getHealth($this->_getClusterNameHash());
         $notTryToConnectMessages = array();
-        if (is_array($failed) && count($failed)) {
+        if ($failed) {
             foreach ($hosts as $i => $host) {
                 if (isset($failed[$host]) && ($dt = $failed[$host] - time()) >= 0) {
                     $notTryToConnectMessages[] = self::LOG_PREFIX . "not trying to connect to \"$host\", because it is marked as failed for $dt second(s) more.";
@@ -376,7 +384,7 @@ class DB_Micro_Replication implements DB_Micro_IConnection
         }
         if (!$hosts) {
             $this->_callLogger(self::LOG_PREFIX . "no alive hosts found at all, so we try to connect to all hosts.");
-            $this->_markClusterAsAlive();
+            $this->_setHealth($this->_getClusterNameHash(), array()); // mark all as alive
             $hosts = $allHosts;
         } else {
             foreach ($notTryToConnectMessages as $msg) {
@@ -394,24 +402,13 @@ class DB_Micro_Replication implements DB_Micro_IConnection
     private function _markHostAsFailed($host, Exception $e)
     {
         $k = $this->_getClusterNameHash();
-        $failed = $this->_kvStorage->get($k);
-        if (!$failed) {
-            $failed = array();
-        }
+        $failed = $this->_getHealth($k);
         $failed[$host] = time() + $this->_paramFailCheckInterval;
-        $this->_kvStorage->set($k, $failed);
-            $this->_callLogger(
-                self::LOG_PREFIX . "marked host \"$host\" as failed for {$this->_paramFailCheckInterval} seconds.\n"
-                . '- ' . ltrim($this->_shift(ucfirst($e->__toString())))
-            );
-    }
-
-    /**
-     * @return void
-     */
-    private function _markClusterAsAlive()
-    {
-        $this->_kvStorage->set($this->_getClusterNameHash(), null);
+        $this->_setHealth($k, $failed);
+        $this->_callLogger(
+            self::LOG_PREFIX . "marked host \"$host\" as failed for {$this->_paramFailCheckInterval} seconds.\n"
+            . '- ' . ltrim($this->_shift(ucfirst($e->__toString())))
+        );
     }
 
     /**
@@ -420,7 +417,7 @@ class DB_Micro_Replication implements DB_Micro_IConnection
     private function _getLastCommitPos()
     {
         if ($this->_lastCommitPosCache === false) {
-            $this->_lastCommitPosCache = $this->_sid !== null? $this->_kvStorage->get($this->_sid) : null;
+            $this->_lastCommitPosCache = $this->_sidNs !== null? $this->_getPos($this->_sidNs) : null;
             if (!$this->_lastCommitPosCache) {
                 $this->_lastCommitPosCache = null;
             }
@@ -472,5 +469,35 @@ class DB_Micro_Replication implements DB_Micro_IConnection
     private function _shift($s)
     {
         return preg_replace('/^/m', '  ', $s);
+    }
+
+    private function _setPos($k, $v)
+    {
+        $this->_storagePos->set($k, serialize($v));
+    }
+
+    private function _getPos($k)
+    {
+        $v = $this->_storagePos->get($k);
+        if ($v) {
+            // Sometimes the serialized data is broken, we just treat it as null below.
+            $v = @unserialize($v);
+        }
+        return $v? $v : null;
+    }
+
+    private function _setHealth($k, array $v)
+    {
+        $this->_storageHealth->set($k, serialize($v));
+    }
+
+    private function _getHealth($k)
+    {
+        $v = $this->_storageHealth->get($k);
+        if ($v) {
+            // Sometimes the serialized data is broken, we just treat it as null below.
+            $v = @unserialize($v);
+        }
+        return is_array($v)? $v : array();
     }
 }

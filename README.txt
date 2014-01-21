@@ -14,8 +14,8 @@ health checks and reach logging support.
 Why yet another library for that? Because there are no good DB libraries which
 could seamlessly work with master-slave replication. Even stand-alone solutions
 (like pgpool-II for PostgreSQL) have insufficient slave lag detection mechanisms.
-Can you believe that? I couldn't too, but after hours of searchind I found
-nothing good enough for working in asynchronous replication environment 
+Can you believe that? I couldn't too, but after hours of searching I've found
+nothing good enough for working in asynchronous replication environment
 transparently.
 
 
@@ -25,7 +25,7 @@ WHAT IS A GOOD MASTER-SLAVE SUPPORTING LIBRARY
 When we work with a master-slave asynchronous replication, we always expect that
 slaves are delayed relative to the master. So if a user writes something to the
 master database, he should not read from a slave anymore, but use only the master -
-at least untill the slave has already applied the changes from the master made by
+at least until the slave has already applied the changes from the master made by
 that user. Else, after the page is reloaded, user will not see his own changes on
 it (for example).
 
@@ -51,15 +51,18 @@ SYNOPSIS
 --------
 
 // Create the engine. Note that the library detects who's the master automatically,
-// it allows to make failover easily with no reconfiguration.
+// it allows to make failover easily with no reconfiguration. Note that not user's
+// SESSION_ID is passed, but the while user's session, this is handled by
+// DB_Micro_Replication_StoragePos_Session.
 $impl = new DB_Micro_Replication_Impl_Pgsql();
-$storage = DB_Micro_Replication_KeyValueStorage_Session();
+$storagePos = DB_Micro_Replication_StoragePos_Session();       // or create your own
+$storageHealth = DB_Micro_Replication_StorageHealth_TmpFile(); // or create your own
 $db = new DB_Micro_Replication(
     "pgsql://user:pwd@host1,host2,host3/dbname?connect_timeout=2&num_conn_tries=2&fail_check_interval=60",
-    function($logMsg, $queryTime, $connName) { echo "You may use your own logger, of course"; },
-    session_id(),
+    function($logMsg, $queryTime, $connName) { echo "You may use your own logger, of course."; },
     $impl,
-    $storage
+    $storagePos,
+    $storageHealth
 );
 
 // Read-only query (goes to a slave is it's up-to-date enough for the current session ID).
