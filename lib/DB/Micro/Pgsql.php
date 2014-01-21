@@ -25,6 +25,11 @@ class DB_Micro_Pgsql extends DB_Micro_Abstract
     private $_byteaOid = null;
 
     /**
+     * List of connection strings which was already used in the current script (in keys).
+     */
+    private static $_openedConnStrs = array();
+
+    /**
      * Perform the connect operation given a parsed DSN.
      * If the connection fails, throws an exception.
      *
@@ -38,12 +43,32 @@ class DB_Micro_Pgsql extends DB_Micro_Abstract
         if (!is_callable('pg_connect')) {
             throw new DB_Micro_Exception("PostgreSQL extension is not loaded", "pg_connect");
         }
+        $connStr = $this->_dsn2str($parsedDsn);
         set_error_handler(array($this, '_onConnectError'), E_WARNING);
         $link = null;
         for ($i = 0; !$link && $i < $numTries; $i++) {
             if ($i) usleep(self::CONN_RETRY_DELAY * 1000000); // wait a it before connection retry
             $this->_connectErrorMsg = null;
-            $link = @pg_connect($this->_dsn2str($parsedDsn), PGSQL_CONNECT_FORCE_NEW);
+            if (!empty($parsedDsn['pconnect']) && empty(self::$_openedConnStrs[$connStr])) {
+                // Pconnect mode is on AND we have NO other connection to the same DSN created recently.
+                $link = @pg_pconnect($connStr);
+                if ($link) {
+                    if (in_array(@pg_transaction_status($link), array(PGSQL_TRANSACTION_INTRANS, PGSQL_TRANSACTION_INERROR))) {
+                        // Typically we should never enter this "if" block, because transactions are
+                        // rolled back by pgsql's module register_shutdown callback (see pgsql.c,
+                        // function registered as PHP_RSHUTDOWN_FUNCTION). But if this shutdown
+                        // function was not called for some reason, we do a manual rollback.
+                        // ATTENTION! ROLLBACK goes before DISCARD, else DISCARD does not work!
+                        @pg_query("ROLLBACK");
+                    }
+                    @pg_query("DISCARD ALL"); // "DISCARD ALL" cannot be glued with other queries!
+                }
+            } else {
+                // Connection persistence is disabled. Or we already have a recently opened
+                // connection, and we DO NOT WANT to reuse it at pg_* level, so we force creation
+                // of a new connection.
+                $link = @pg_connect($connStr, PGSQL_CONNECT_FORCE_NEW);
+            }
         }
         restore_error_handler();
         if (!$link) {
@@ -51,6 +76,7 @@ class DB_Micro_Pgsql extends DB_Micro_Abstract
                 . " (tried $numTries times with " . self::CONN_RETRY_DELAY . "s delay)";
             throw new DB_Micro_Exception($msg, "pg_connect");
         }
+        self::$_openedConnStrs[$connStr] = true;
         return $link;
     }
 
