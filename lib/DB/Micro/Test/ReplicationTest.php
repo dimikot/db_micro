@@ -89,7 +89,7 @@ class DB_Micro_Test_ReplicationTest extends PHPUnit_Framework_TestCase
         $replication->query('select 1');
         $this->assertEquals(
             array(
-                'Replication: not trying to connect to "dead", because it is marked as failed for 1 second(s) more.',
+                "Replication: not trying to connect to \"dead\", because it is marked as failed.",
                 'slave: connect',
                 'slave(ro): select 1',
             ),

@@ -138,16 +138,27 @@ class DB_Micro_Replication implements DB_Micro_IConnection
      * to force using of the master DB only. The method also closes the slave
      * connection and remains only one - to the master.
      *
+     * @param bool $closeSlaves   It true, close other slave connections.
      * @return self
      */
-    public function switchToMaster()
+    public function switchToMaster($closeSlaves = false)
     {
         $this->_hadUpdates = true;
         $this->_hadUpatesBeforeTransaction = true; // master becomes active even after ROLLBACK
-        // We DO NOT close the slave connection here, because later somebody
-        // may need to call mSidNamespace(null) and force a slave to be used
-        // with the new connect command (which is expensive).
-        // So we do not economize slave connections.
+        // We DO NOT close the slave connection by default, because:
+        // 1. Later somebody may need to call mSidNamespace(null) and
+        //    force a slave to be used with the new connect command
+        //    (which is expensive).
+        // 2. There may be no queries to the DB at all after switchToMaster()
+        //    call (e.g. switchToMaster() is called, because there is no
+        //    session could be supported in the current script, so we
+        //    cannot work with a slave by default, but the script never
+        //    calls any DB query, so we don't waste time on the master's
+        //    searching).
+        if ($closeSlaves) {
+            $this->_masterConnCache = $this->_getMasterConn(); // we'll never search for a master in the future
+            $this->_slaveConnCache = null; // close the slave connection, and _hadUpdates==true, so never use slave
+        }
         return $this;
     }
 
@@ -359,7 +370,7 @@ class DB_Micro_Replication implements DB_Micro_IConnection
                 $exceptionsText[] = '- ' . ltrim($this->_shift($e->__toString()));
             }
         }
-        throw new DB_Micro_Exception(
+        throw new DB_Micro_ExceptionConnect(
             "All databases seem to be inaccessible, cannot connect."
             . ($exceptionsText? "\nExceptions happened:\n" . join("\n", $exceptionsText) : ""),
             'connect'
@@ -377,7 +388,7 @@ class DB_Micro_Replication implements DB_Micro_IConnection
         if ($failed) {
             foreach ($hosts as $i => $host) {
                 if (isset($failed[$host]) && ($dt = $failed[$host] - time()) >= 0) {
-                    $notTryToConnectMessages[] = self::LOG_PREFIX . "not trying to connect to \"$host\", because it is marked as failed for $dt second(s) more.";
+                    $notTryToConnectMessages[] = self::LOG_PREFIX . "not trying to connect to \"$host\", because it is marked as failed.\nWill recheck in $dt second(s).";
                     unset($hosts[$i]);
                 }
             }
@@ -450,7 +461,12 @@ class DB_Micro_Replication implements DB_Micro_IConnection
         if ($isMaster) {
             $dsn .= self::DSN_MASTER_SUFFIX;
         }
-        $conn = $this->_impl->createConnection($dsn, $this->_logger);
+        try {
+            $conn = $this->_impl->createConnection($dsn, $this->_logger);
+        } catch (DB_Micro_ExceptionConnect $e) {
+            $e->setIsMaster(true);
+            throw $e;
+        }
         // We add a counter to DSN to uniquely identify connection objects
         // in $this->_connStatesCache cache. We can't identify objects by
         // DSNs, because many connections with same DSN, but with different

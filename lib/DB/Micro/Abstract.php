@@ -169,6 +169,21 @@ abstract class DB_Micro_Abstract implements DB_Micro_IConnection
             $parsed += $params;
         }
         $parsed['dsn'] = $dsn;
+        if (isset($parsed['dbproxy'])) {
+            // The "dbproxy" parameter causes prepending the database name by the
+            // host name and switching host name to the proxy's host. E.g. the DSN
+            //   pgsql://host/db?dbproxy=127.0.0.1
+            // is converted to
+            //   pgsql://127.0.0.1/host-db
+            $parsed['dbname'] = $parsed['host'] . (@$parsed['port']? '-' . $parsed['port'] : '') . '-' . ltrim($parsed['dbname']);
+            $parsed['host'] = $parsed['dbproxy'];
+            if (preg_match('/^(.*):(\d+)$/s', $parsed['host'], $m)) {
+                $parsed['host'] = $m[1];
+                $parsed['port'] = $m[2];
+            }
+            unset($params['dbproxy']);
+            $parsed['query'] = http_build_query($params);
+        }
         $parsed['connName'] = ""
             . "{$parsed['scheme']}://"
             . "{$parsed['user']}@{$parsed['host']}"

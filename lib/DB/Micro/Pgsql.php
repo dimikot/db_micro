@@ -1,7 +1,7 @@
 <?php
 class DB_Micro_Pgsql extends DB_Micro_Abstract
 {
-    const CONN_RETRY_DELAY = 0.5;
+    const CONN_RETRY_DELAY = 0.1;
 
     /**
      * Temporarily connect error buffer.
@@ -41,14 +41,18 @@ class DB_Micro_Pgsql extends DB_Micro_Abstract
     protected function _performConnect($parsedDsn, $numTries = 1)
     {
         if (!is_callable('pg_connect')) {
-            throw new DB_Micro_Exception("PostgreSQL extension is not loaded", "pg_connect");
+            throw new DB_Micro_ExceptionConnect("PostgreSQL extension is not loaded", "pg_connect");
         }
         $connStr = $this->_dsn2str($parsedDsn);
         set_error_handler(array($this, '_onConnectError'), E_WARNING);
         $link = null;
         for ($i = 0; !$link && $i < $numTries; $i++) {
-            if ($i) usleep(self::CONN_RETRY_DELAY * 1000000); // wait a it before connection retry
+            if ($i) {
+                $dt = max(0, self::CONN_RETRY_DELAY - (microtime(true) - $prevConnectTime));
+                if ($dt) usleep($dt * 1000000); // wait a bit before connection retry
+            }
             $this->_connectErrorMsg = null;
+            $prevConnectTime = microtime(true);
             if (!empty($parsedDsn['pconnect']) && empty(self::$_openedConnStrs[$connStr])) {
                 // Pconnect mode is on AND we have NO other connection to the same DSN created recently.
                 $link = @pg_pconnect($connStr);
@@ -74,7 +78,7 @@ class DB_Micro_Pgsql extends DB_Micro_Abstract
         if (!$link) {
             $msg = preg_replace('/\s*\[.*?\]/s', '', htmlspecialchars_decode($this->_connectErrorMsg))
                 . " (tried $numTries times with " . self::CONN_RETRY_DELAY . "s delay)";
-            throw new DB_Micro_Exception($msg, "pg_connect");
+            throw new DB_Micro_ExceptionConnect($msg, "pg_connect");
         }
         self::$_openedConnStrs[$connStr] = true;
         return $link;
@@ -96,11 +100,13 @@ class DB_Micro_Pgsql extends DB_Micro_Abstract
             // so we need to fetch BYTEA OID once and cache it.
             $result = @pg_query($link, $tmpSql = "SELECT oid FROM pg_type WHERE typname='bytea'");
             if (!$result) {
-                throw new DB_Micro_Exception(pg_last_error($link), $tmpSql);
+                // DB_Micro_ExceptionConnect, because this query should never fail on a
+                // healthy connection, ant it is a very first query.
+                throw new DB_Micro_ExceptionConnect(pg_last_error($link), $tmpSql);
             }
             $this->_byteaOid = @pg_fetch_result($result, 0, 0);
             if (!$this->_byteaOid) {
-                throw new DB_Micro_Exception("Cannot fetch OID of BYTEA type - result is empty", $tmpSql);
+                throw new DB_Micro_ExceptionConnect("Cannot fetch OID of BYTEA type - result is empty", $tmpSql);
             }
         }
         $result = @pg_query($link, $sql);
@@ -172,7 +178,7 @@ class DB_Micro_Pgsql extends DB_Micro_Abstract
             || !isset($parsed['dbname']) || !isset($parsed['user'])
             || !isset($parsed['pass'])
         ) {
-            throw new DB_Micro_Exception("Invalid DSN format: {$parsed['dsn']}", '');
+            throw new DB_Micro_ExceptionConnect("Invalid DSN format: {$parsed['dsn']}", '');
         }
         $str = '';
         $str .= "host='{$parsed['host']}'";
