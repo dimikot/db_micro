@@ -11,6 +11,7 @@ abstract class DB_Micro_Abstract implements DB_Micro_IConnection
     private $_conn;
     private $_connName;
     private $_dsn;
+    private $_connectPerformed;
 
     /**
      * Perform the connect operation given a parsed DSN.
@@ -83,6 +84,7 @@ abstract class DB_Micro_Abstract implements DB_Micro_IConnection
                 $numTries = @$parsed['num_conn_tries'];
                 $this->_connName = $parsed['connName'] . "#" . (++self::$_numConn);
                 $this->_conn = $this->_performConnect($parsed, $numTries? $numTries : 1);
+                $this->_connectPerformed = true;
             } else {
                 $this->_connName = strval($dsn) . "#" . (++self::$_numConn);
                 $this->_conn = $dsn;
@@ -95,6 +97,16 @@ abstract class DB_Micro_Abstract implements DB_Micro_IConnection
         }
         $dt = microtime(true) - $t0;
         $this->_log("CONNECT '" . addslashes($this->_connName) . "'", $dt, array(array(1)));
+    }
+
+    /**
+     * Just logs that the connection has been closed.
+     */
+    public function __destruct()
+    {
+        if ($this->_connectPerformed) {
+            $this->_log("DISCONNECT '" . addslashes($this->_connName) . "'", 0, array(array(1)));
+        }
     }
 
     /**

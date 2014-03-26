@@ -156,8 +156,7 @@ class DB_Micro_Replication implements DB_Micro_IConnection
         //    calls any DB query, so we don't waste time on the master's
         //    searching).
         if ($closeSlaves) {
-            $this->_masterConnCache = $this->_getMasterConn(); // we'll never search for a master in the future
-            $this->_slaveConnCache = null; // close the slave connection, and _hadUpdates==true, so never use slave
+            $this->_getMasterConn(true); // search for a master now and close the slave immediately
         }
         return $this;
     }
@@ -254,13 +253,21 @@ class DB_Micro_Replication implements DB_Micro_IConnection
     }
 
     /**
+     * @param bool $closeSlaves
      * @return DB_Micro_IConnection
      */
-    public function _getMasterConn()
+    private function _getMasterConn($closeSlaves=false)
     {
         if (!$this->_masterConnCache) {
             $conn = $this->_getSlaveConn();
             $state = $this->_prepareReadOnlyConnection($conn);
+            if ($closeSlaves) {
+                // Close slave BEFORE we open a master connection to beautify
+                // SQL logs output (connect1 + disconnect1 + connect2 is better than
+                // connect1 + connect2 + disconnect1).
+                $conn = null;
+                $this->_slaveConnCache = null;
+            }
             $this->_masterConnCache = $this->_createConnection($state->masterHost, true);
         }
         return $this->_masterConnCache;
@@ -453,6 +460,7 @@ class DB_Micro_Replication implements DB_Micro_IConnection
      * @param string $host
      * @param bool $isMaster
      * @return DB_Micro_IConnection
+     * @throws DB_Micro_ExceptionConnect
      */
     private function _createConnection($host, $isMaster = false)
     {

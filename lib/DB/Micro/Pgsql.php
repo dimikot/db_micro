@@ -109,14 +109,21 @@ class DB_Micro_Pgsql extends DB_Micro_Abstract
                 throw new DB_Micro_ExceptionConnect("Cannot fetch OID of BYTEA type - result is empty", $tmpSql);
             }
         }
+        if (pg_connection_status($link) !== PGSQL_CONNECTION_OK) {
+            throw new DB_Micro_Exception("DB_Micro: remote side had already closed the connection before the query arrived", $sql);
+        }
         $result = @pg_query($link, $sql);
         if (!$result) {
             $error = pg_last_error($link);
+            if (!trim($error) && pg_connection_status($link) !== PGSQL_CONNECTION_OK) {
+                // This happens when we are a waiting parent process AND the conection
+                // has been closed inside a child process.
+                throw new DB_Micro_Exception("DB_Micro: remote side has closed the connection before or during the query execution", $sql);
+            }
             if (preg_match('/in a read-only transaction/s', $error)) {
                 throw new DB_Micro_ExceptionReadonly($error, $sql);
-            } else {
-                throw new DB_Micro_Exception($error, $sql);
             }
+            throw new DB_Micro_Exception($error, $sql);
         }
         $rows = array();
         while (($row = pg_fetch_assoc($result))) {
