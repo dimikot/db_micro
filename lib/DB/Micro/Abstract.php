@@ -81,7 +81,7 @@ abstract class DB_Micro_Abstract implements DB_Micro_IConnection
         try {
             if (!is_resource($dsn)) {
                 $parsed = self::parseDSN($dsn);
-                $numTries = @$parsed['num_conn_tries'];
+                $numTries = isset($parsed['num_conn_tries'])? $parsed['num_conn_tries'] : null;
                 $this->_connName = $parsed['connName'] . "#" . (++self::$_numConn);
                 $this->_conn = $this->_performConnect($parsed, $numTries? $numTries : 1);
                 $this->_connectPerformed = true;

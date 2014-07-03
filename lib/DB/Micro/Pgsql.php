@@ -18,13 +18,6 @@ class DB_Micro_Pgsql extends DB_Micro_Abstract
     private $_lastNotice = null;
 
     /**
-     * OID of BYTEA type (cached).
-     *
-     * @var int
-     */
-    private $_byteaOid = null;
-
-    /**
      * List of connection strings which was already used in the current script (in keys).
      */
     private static $_openedConnStrs = array();
@@ -45,7 +38,7 @@ class DB_Micro_Pgsql extends DB_Micro_Abstract
         }
         $connStr = $this->_dsn2str($parsedDsn);
         set_error_handler(array($this, '_onConnectError'), E_WARNING);
-        $link = null;
+        $link = $prevConnectTime = null;
         for ($i = 0; !$link && $i < $numTries; $i++) {
             if ($i) {
                 $dt = max(0, self::CONN_RETRY_DELAY - (microtime(true) - $prevConnectTime));
@@ -95,20 +88,6 @@ class DB_Micro_Pgsql extends DB_Micro_Abstract
      */
     protected function _performQuery($link, $sql)
     {
-        if (!$this->_byteaOid) {
-            // Get rid of pg_field_type() - use only pg_field_type_oid(),
-            // so we need to fetch BYTEA OID once and cache it.
-            $result = @pg_query($link, $tmpSql = "SELECT oid FROM pg_type WHERE typname='bytea'");
-            if (!$result) {
-                // DB_Micro_ExceptionConnect, because this query should never fail on a
-                // healthy connection, ant it is a very first query.
-                throw new DB_Micro_ExceptionConnect(pg_last_error($link), $tmpSql);
-            }
-            $this->_byteaOid = @pg_fetch_result($result, 0, 0);
-            if (!$this->_byteaOid) {
-                throw new DB_Micro_ExceptionConnect("Cannot fetch OID of BYTEA type - result is empty", $tmpSql);
-            }
-        }
         if (pg_connection_status($link) !== PGSQL_CONNECTION_OK) {
             throw new DB_Micro_Exception("DB_Micro: remote side had already closed the connection before the query arrived", $sql);
         }
@@ -129,21 +108,6 @@ class DB_Micro_Pgsql extends DB_Micro_Abstract
         while (($row = pg_fetch_assoc($result))) {
             $rows[] = $row;
         }
-        // Convert BLOBs to DB_Micro_Blob("unescaped value").
-        if ($rows) {
-            $i = 0;
-            foreach ($rows[0] as $k => $v) {
-                // DO NOT use pg_field_type(), because it is damned slow!!!
-                if (pg_field_type_oid($result, $i) == $this->_byteaOid) {
-                    foreach ($rows as $n => $row) {
-                        if ($row[$k] !== null) {
-                            $rows[$n][$k] = new DB_Micro_Blob(pg_unescape_bytea($row[$k]));
-                        }
-                    }
-                }
-                $i++;
-            }
-        }
         return $rows;
     }
 
@@ -158,15 +122,17 @@ class DB_Micro_Pgsql extends DB_Micro_Abstract
     {
         if ($value === null) {
             $quoted = "NULL";
-        } else if (is_object($value) && $value instanceof DB_Micro_Blob) {
-            // Work-around to be compatible with 8.4 and 9.1+.
-            $quoted = "decode('" . base64_encode($value->get()) . "', 'base64')";
         } else {
             // pg_escape_string does not support strings with \0 - it breaks
             // the string at that pos.
-            $value = str_replace("\x00", " ", $value);
+            $value = str_replace(chr(0), " ", $value);
             $quoted = "'" . pg_escape_string($conn, $value) . "'";
-            if (false !== strpos($quoted, '\\')) $quoted = 'E' . $quoted;
+            if (false !== strpos($quoted, '\\') && pg_escape_string($conn, "\\") !== "\\") {
+                // If standard_conforming_strings=false and we have a slash within the
+                // string, we must prepend "E", else we receive a pg_last_notice():
+                // "WARNING: nonstandard use of \ in a string literal"
+                $quoted = 'E' . $quoted;
+            }
         }
         return $quoted;
     }
